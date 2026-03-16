@@ -545,6 +545,50 @@ function downloadAllUpdatedFiles(){
 /* =========================================================
    PUSH TO GITHUB
 ========================================================= */
+async function waitForWorkflowCompletion(owner, repo, token, branch = "main") {
+
+  const headers = {
+    Authorization: `token ${token}`,
+    Accept: "application/vnd.github+json"
+  };
+
+  let completed = false;
+  let runId = null;
+
+  while (!completed) {
+
+    const runsRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/actions/runs?branch=${branch}&per_page=1`,
+      { headers }
+    );
+
+    const runsData = await runsRes.json();
+
+    if (!runsData.workflow_runs || runsData.workflow_runs.length === 0) {
+      await new Promise(r => setTimeout(r, 4000));
+      continue;
+    }
+
+    const run = runsData.workflow_runs[0];
+    runId = run.id;
+
+    console.log("Workflow status:", run.status, run.conclusion);
+
+    if (run.status === "completed") {
+      completed = true;
+
+      if (run.conclusion === "success") {
+        return true;
+      } else {
+        throw new Error("GitHub Action failed");
+      }
+    }
+
+    // wait 4 seconds before checking again
+    await new Promise(r => setTimeout(r, 4000));
+  }
+
+}
 async function saveAndPushChanges(){
 
   if(!modifiedHTML || !(modifiedHTML instanceof Map)){
@@ -732,6 +776,7 @@ async function saveAndPushChanges(){
       throw new Error("Branch update failed");
     }
 
+    await waitForWorkflowCompletion(OWNER, REPO, token);
     showCustomAlertBox('success','All changes pushed successfully.');
 
   }
