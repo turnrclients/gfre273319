@@ -548,7 +548,7 @@ function downloadAllUpdatedFiles(){
 async function saveAndPushChanges(){
 
   if(!modifiedHTML || !(modifiedHTML instanceof Map)){
-    showCustomAlertBox('error', 'No modified files detected.');
+    showCustomAlertBox('error','No modified files detected.');
     return;
   }
 
@@ -559,103 +559,134 @@ async function saveAndPushChanges(){
 
   const headers = {
     "Authorization": `token ${token}`,
-    "Accept": "application/vnd.github.v3+json",
-    "Content-Type": "application/json"
+    "Accept": "application/vnd.github.v3+json"
   };
 
-  //  SHOW LOADER ONCE
   showProjectLoader("Uploading changes, please wait…");
 
-  try {
+  try{
 
-    // ================= PUSH HTML FILES =================
+    // 1️⃣ Get branch reference
+    const refRes = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/ref/heads/${BRANCH}`,
+      {headers}
+    );
+    const refData = await refRes.json();
+    const latestCommitSha = refData.object.sha;
+
+    // 2️⃣ Get commit
+    const commitRes = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/commits/${latestCommitSha}`,
+      {headers}
+    );
+    const commitData = await commitRes.json();
+    const baseTreeSha = commitData.tree.sha;
+
+    const treeItems = [];
+
+    // ================= HTML FILES =================
     for(const [filePath, html] of modifiedHTML.entries()){
-      try{
 
-        const getUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${filePath}`;
-        const fileData = await fetch(getUrl,{headers}).then(r=>r.json());
-        if(!fileData.sha) throw new Error("SHA not found for "+filePath);
+      treeItems.push({
+        path: filePath,
+        mode: "100644",
+        type: "blob",
+        content: html
+      });
 
-        const payload = {
-          message:`Update ${filePath} via browser editor`,
-          content:btoa(unescape(encodeURIComponent(html))),
-          branch:BRANCH,
-          sha:fileData.sha
-        };
-
-        const response = await fetch(getUrl,{
-          method:"PUT",
-          headers,
-          body:JSON.stringify(payload)
-        });
-
-        if(response.ok){
-          console.log(`${filePath} pushed.`);
-        } else {
-          console.error(`Failed to push ${filePath}`);
-        }
-
-      }catch(err){
-        console.error("HTML push error:",err);
-      }
     }
 
-    // ================= PUSH STAGED IMAGES =================
-    if (window.imageChangeLog && imageChangeLog.size > 0) {
+    // ================= IMAGES =================
+    if(window.imageChangeLog && imageChangeLog.size > 0){
 
-      for (const [repoImagePath, data] of imageChangeLog.entries()) {
+      for(const [repoImagePath, data] of imageChangeLog.entries()){
 
-        try {
+        const base64 = await new Promise((resolve,reject)=>{
+          const reader = new FileReader();
+          reader.readAsDataURL(data.file);
+          reader.onload = ()=>resolve(reader.result.split(",")[1]);
+          reader.onerror = reject;
+        });
 
-          const base64 = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.readAsDataURL(data.file);
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = reject;
-          });
+        treeItems.push({
+          path: repoImagePath,
+          mode: "100644",
+          type: "blob",
+          content: atob(base64)
+        });
 
-          const getUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${repoImagePath}`;
-          const fileData = await fetch(getUrl, { headers }).then(r => r.json());
-
-          const payload = {
-            message: `Update ${repoImagePath} via browser editor`,
-            content: base64.split(",")[1],
-            branch: BRANCH,
-            sha: fileData.sha
-          };
-
-          await fetch(getUrl, {
-            method: "PUT",
-            headers,
-            body: JSON.stringify(payload)
-          });
-
-          console.log("Image pushed:", repoImagePath);
-
-        } catch (err) {
-          console.error("Image push failed:", repoImagePath, err);
-        }
       }
 
       imageChangeLog.clear();
     }
 
-    // document.getElementById('rollback').style.display = 'block';
+    // 3️⃣ Create tree
+    const treeRes = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/trees`,
+      {
+        method:"POST",
+        headers:{
+          ...headers,
+          "Content-Type":"application/json"
+        },
+        body:JSON.stringify({
+          base_tree:baseTreeSha,
+          tree:treeItems
+        })
+      }
+    );
 
-    showCustomAlertBox('success', 'All changes deployed successfully.');
+    const treeData = await treeRes.json();
 
-  } 
-  catch (globalError) {
+    // 4️⃣ Create commit
+    const commitCreateRes = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/commits`,
+      {
+        method:"POST",
+        headers:{
+          ...headers,
+          "Content-Type":"application/json"
+        },
+        body:JSON.stringify({
+          message:"Update site via browser editor",
+          tree:treeData.sha,
+          parents:[latestCommitSha]
+        })
+      }
+    );
 
-    console.error("Global push error:", globalError);
-    showCustomAlertBox('error', 'Something went wrong while deploying.');
+    const newCommit = await commitCreateRes.json();
 
-  } 
-  finally {
-    // ALWAYS HIDE LOADER (even if error happens)
+    // 5️⃣ Update branch
+    await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/refs/heads/${BRANCH}`,
+      {
+        method:"PATCH",
+        headers:{
+          ...headers,
+          "Content-Type":"application/json"
+        },
+        body:JSON.stringify({
+          sha:newCommit.sha
+        })
+      }
+    );
+
+    showCustomAlertBox('success','All changes pushed in one commit.');
+
+  }
+  catch(err){
+
+    console.error(err);
+    showCustomAlertBox('error','Deployment failed.');
+
+  }
+  finally{
+
     hideProjectLoader();
 
   }
+
 }
 
 
