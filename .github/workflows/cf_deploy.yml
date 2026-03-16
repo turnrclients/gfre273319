@@ -29,4 +29,5 @@ jobs:
           wrangler pages deploy . \
             --project-name=featurebugcheck \
             --branch=main \
-            --commit-hash=$GITHUB_SHA               
+            --commit-hash=$GITHUB_SHA \
+            --commit-dirty=true
