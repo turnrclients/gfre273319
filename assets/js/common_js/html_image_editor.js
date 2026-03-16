@@ -567,25 +567,25 @@ async function saveAndPushChanges(){
 
   try{
 
-    // ------------------------------
-    // 1️⃣ Get latest branch commit
-    // ------------------------------
+    // ---------------------------
+    // 1️⃣ Get latest branch ref
+    // ---------------------------
 
     const refRes = await fetch(
       `https://api.github.com/repos/${OWNER}/${REPO}/git/ref/heads/${BRANCH}`,
-      {headers}
+      { headers }
     );
 
     const refData = await refRes.json();
     const latestCommitSha = refData.object.sha;
 
-    // ------------------------------
-    // 2️⃣ Get base tree
-    // ------------------------------
+    // ---------------------------
+    // 2️⃣ Get commit details
+    // ---------------------------
 
     const commitRes = await fetch(
       `https://api.github.com/repos/${OWNER}/${REPO}/git/commits/${latestCommitSha}`,
-      {headers}
+      { headers }
     );
 
     const commitData = await commitRes.json();
@@ -593,14 +593,16 @@ async function saveAndPushChanges(){
 
     const treeItems = [];
 
-    // ------------------------------
+    // ---------------------------
     // 3️⃣ Add HTML files
-    // ------------------------------
+    // ---------------------------
 
     for(const [filePath, html] of modifiedHTML.entries()){
 
+      const cleanPath = filePath.replace(/^\/+/,"");
+
       treeItems.push({
-        path: filePath,
+        path: cleanPath,
         mode: "100644",
         type: "blob",
         content: html
@@ -608,13 +610,15 @@ async function saveAndPushChanges(){
 
     }
 
-    // ------------------------------
-    // 4️⃣ Add images
-    // ------------------------------
+    // ---------------------------
+    // 4️⃣ Upload images as blobs
+    // ---------------------------
 
     if(window.imageChangeLog && imageChangeLog.size > 0){
 
       for(const [repoImagePath,data] of imageChangeLog.entries()){
+
+        const cleanPath = repoImagePath.replace(/^\/+/,"");
 
         const base64 = await new Promise((resolve,reject)=>{
           const reader = new FileReader();
@@ -623,12 +627,31 @@ async function saveAndPushChanges(){
           reader.onerror = reject;
         });
 
+        // Create blob
+        const blobRes = await fetch(
+          `https://api.github.com/repos/${OWNER}/${REPO}/git/blobs`,
+          {
+            method:"POST",
+            headers,
+            body:JSON.stringify({
+              content: base64,
+              encoding: "base64"
+            })
+          }
+        );
+
+        const blobData = await blobRes.json();
+
+        if(!blobData.sha){
+          console.error("Blob creation failed", blobData);
+          throw new Error("Image blob creation failed");
+        }
+
         treeItems.push({
-          path: repoImagePath,
+          path: cleanPath,
           mode: "100644",
           type: "blob",
-          content: base64,
-          encoding: "base64"
+          sha: blobData.sha
         });
 
       }
@@ -640,9 +663,9 @@ async function saveAndPushChanges(){
       throw new Error("No files changed.");
     }
 
-    // ------------------------------
-    // 5️⃣ Create new tree
-    // ------------------------------
+    // ---------------------------
+    // 5️⃣ Create tree
+    // ---------------------------
 
     const treeRes = await fetch(
       `https://api.github.com/repos/${OWNER}/${REPO}/git/trees`,
@@ -650,21 +673,22 @@ async function saveAndPushChanges(){
         method:"POST",
         headers,
         body:JSON.stringify({
-          base_tree:baseTreeSha,
-          tree:treeItems
+          base_tree: baseTreeSha,
+          tree: treeItems
         })
       }
     );
 
     const treeData = await treeRes.json();
 
-    if(!treeData.sha){
+    if(!treeRes.ok){
+      console.error("Tree API error:", treeData);
       throw new Error("Tree creation failed");
     }
 
-    // ------------------------------
+    // ---------------------------
     // 6️⃣ Create commit
-    // ------------------------------
+    // ---------------------------
 
     const commitRes2 = await fetch(
       `https://api.github.com/repos/${OWNER}/${REPO}/git/commits`,
@@ -673,7 +697,7 @@ async function saveAndPushChanges(){
         headers,
         body:JSON.stringify({
           message:"Website update via browser editor",
-          tree:treeData.sha,
+          tree: treeData.sha,
           parents:[latestCommitSha]
         })
       }
@@ -681,15 +705,16 @@ async function saveAndPushChanges(){
 
     const newCommit = await commitRes2.json();
 
-    if(!newCommit.sha){
+    if(!commitRes2.ok){
+      console.error("Commit API error:", newCommit);
       throw new Error("Commit creation failed");
     }
 
-    // ------------------------------
-    // 7️⃣ Update branch reference
-    // ------------------------------
+    // ---------------------------
+    // 7️⃣ Update branch ref
+    // ---------------------------
 
-    await fetch(
+    const refUpdate = await fetch(
       `https://api.github.com/repos/${OWNER}/${REPO}/git/refs/heads/${BRANCH}`,
       {
         method:"PATCH",
@@ -699,6 +724,13 @@ async function saveAndPushChanges(){
         })
       }
     );
+
+    const refUpdateData = await refUpdate.json();
+
+    if(!refUpdate.ok){
+      console.error("Ref update error:", refUpdateData);
+      throw new Error("Branch update failed");
+    }
 
     showCustomAlertBox('success','All changes pushed successfully.');
 
