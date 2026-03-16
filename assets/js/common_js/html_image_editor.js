@@ -545,50 +545,64 @@ function downloadAllUpdatedFiles(){
 /* =========================================================
    PUSH TO GITHUB
 ========================================================= */
-async function waitForWorkflowCompletion(owner, repo, token, branch = "main") {
+async function waitForWorkflowCompletion(owner, repo, token, commitSha) {
 
   const headers = {
     Authorization: `token ${token}`,
     Accept: "application/vnd.github+json"
   };
 
-  let completed = false;
-  let runId = null;
+  let workflowRun = null;
 
-  while (!completed) {
+  // Wait until workflow run appears
+  while (!workflowRun) {
 
-    const runsRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/actions/runs?branch=${branch}&per_page=1`,
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${commitSha}`,
       { headers }
     );
 
-    const runsData = await runsRes.json();
+    const data = await res.json();
 
-    if (!runsData.workflow_runs || runsData.workflow_runs.length === 0) {
+    if (data.workflow_runs && data.workflow_runs.length > 0) {
+      workflowRun = data.workflow_runs[0];
+    } else {
+      console.log("Waiting for workflow to start...");
       await new Promise(r => setTimeout(r, 4000));
-      continue;
     }
 
-    const run = runsData.workflow_runs[0];
-    runId = run.id;
+  }
 
-    console.log("Workflow status:", run.status, run.conclusion);
+  const runId = workflowRun.id;
 
-    if (run.status === "completed") {
-      completed = true;
+  console.log("Workflow started:", runId);
 
-      if (run.conclusion === "success") {
+  // Poll until workflow finishes
+  while (true) {
+
+    const runRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}`,
+      { headers }
+    );
+
+    const runData = await runRes.json();
+
+    console.log("Workflow status:", runData.status);
+
+    if (runData.status === "completed") {
+
+      if (runData.conclusion === "success") {
         return true;
-      } else {
-        throw new Error("GitHub Action failed");
       }
+
+      throw new Error("GitHub Action failed");
     }
 
-    // wait 4 seconds before checking again
     await new Promise(r => setTimeout(r, 4000));
   }
 
 }
+
 async function saveAndPushChanges(){
 
   if(!modifiedHTML || !(modifiedHTML instanceof Map)){
@@ -776,8 +790,10 @@ async function saveAndPushChanges(){
       throw new Error("Branch update failed");
     }
 
-    await waitForWorkflowCompletion(OWNER, REPO, token);
-    showCustomAlertBox('success','All changes pushed successfully.');
+    // wait for GitHub Action deployment
+   await waitForWorkflowCompletion(OWNER, REPO, token, newCommit.sha);
+    
+    showCustomAlertBox('success','Deployment completed successfully.');
 
   }
   catch(err){
